@@ -1,0 +1,124 @@
+const { Builder, By, until, Actions } = require('selenium-webdriver');
+const chrome = require('selenium-webdriver/chrome');
+
+async function scrapeVJudgeHeatmap(username) {
+  if (!username || typeof username !== 'string') {
+    return { success: false, error: 'Invalid username provided' };
+  }
+
+  const url = `https://vjudge.net/user/${encodeURIComponent(username)}`;
+  const options = new chrome.Options();
+  options.addArguments('--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage');
+  
+  const driver = await new Builder().forBrowser('chrome').setChromeOptions(options).build();
+  
+  try {
+    console.log(`Navigating to ${url}`);
+    await driver.get(url);
+    
+    // Wait for page to load
+    await driver.wait(until.elementLocated(By.css('svg')), 15000);
+    await driver.sleep(3000);
+    
+    // Target date: December 13, 2024
+    const targetDateStr = '2024-12-13';
+    
+    // Find the rectangle for the target date using WebDriver methods
+    const dateRects = await driver.findElements(By.css('svg rect[data-date]'));
+    console.log(`Found ${dateRects.length} date rectangles`);
+    
+    let targetRect = null;
+    let rectData = {};
+    
+    for (const rect of dateRects) {
+      const dateAttr = await rect.getAttribute('data-date');
+      if (dateAttr && dateAttr === targetDateStr) {
+        targetRect = rect;
+        
+        // Collect rectangle data
+        rectData.date = dateAttr;
+        rectData.fill = await rect.getCssValue('fill');
+        rectData.dataItems = await rect.getAttribute('data-items');
+        rectData.dataLegend = await rect.getAttribute('data-legend');
+        
+        break;
+      }
+    }
+    
+    if (!targetRect) {
+      console.log(`No rectangle found for date ${targetDateStr}`);
+      await driver.quit();
+      return {
+        success: true,
+        username: username,
+        data: []
+      };
+    }
+    
+    console.log(`Found rectangle for ${targetDateStr}`);
+    
+    // Click the rectangle using WebDriver actions
+    const actions = driver.actions({async: true});
+    await actions.move({origin: targetRect}).click().perform();
+    
+    // Wait for the problem list to load after clicking
+    await driver.sleep(3000);
+    
+    // Get all table rows
+    const rows = await driver.findElements(By.css('table tr'));
+    console.log(`Found ${rows.length} rows in table`);
+    
+    // Skip header row, process only problem rows
+    const problemsData = [];
+    
+    if (rows.length > 1) {
+      for (let i = 1; i < rows.length; i++) {
+        const cells = await rows[i].findElements(By.css('td'));
+        
+        if (cells.length >= 5) {
+          const problemData = {
+            origin: await cells[1].getText(),
+            title: await cells[2].getText(),
+            solved: await cells[3].getText(),
+            source: await cells[4].getText()
+          };
+          
+          // Get contest if available
+          if (cells.length >= 6) {
+            problemData.contest = await cells[5].getText();
+          } else {
+            problemData.contest = '';
+          }
+          
+          problemsData.push(problemData);
+        }
+      }
+    }
+    
+    console.log(`Processed ${problemsData.length} problems for ${targetDateStr}`);
+    
+    await driver.quit();
+    
+    return { 
+      success: true, 
+      username: username,
+      data: [{
+        date: targetDateStr,
+        color: rectData.fill || '',
+        count: problemsData.length,
+        problems: problemsData
+      }]
+    };
+    
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    await driver.quit();
+    return { 
+      success: false, 
+      error: err.message || 'Heatmap scraping failed',
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+module.exports = scrapeVJudgeHeatmap;
